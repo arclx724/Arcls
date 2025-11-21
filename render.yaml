@@ -1,0 +1,23 @@
+services:
+  - type: worker
+    name: arcls-telegram-bot
+    env: python
+    plan: free
+
+    buildCommand: |
+      pip install --upgrade pip
+      pip install -r requirements.txt
+
+    startCommand: python3 main.py
+
+    envVars:
+      - key: API_ID
+        sync: false
+      - key: API_HASH
+        sync: false
+      - key: BOT_TOKEN
+        sync: false
+      - key: MONGO_URL
+        sync: false
+      - key: OWNER_ID
+        sync: false
