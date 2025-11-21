@@ -7,20 +7,100 @@
 # License: Open-source (keep credits, no resale)
 # ============================================================
 
-
 from pyrogram import Client, filters
 from pyrogram.types import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto
 )
+from datetime import datetime, timedelta
 from config import BOT_USERNAME, SUPPORT_GROUP, UPDATE_CHANNEL, START_IMAGE, OWNER_ID
 import db
 
-def register_handlers(app: Client):
+# ==========================================================
+# 24-Hour Ban Tracking System
+# ==========================================================
+
+admin_ban_data = {}   # admin_id → {count, start_time}
+MAX_BANS = 10         # Max bans allowed in 24 hours
+
+
+def register_ban(admin_id):
+    now = datetime.now()
+
+    if admin_id not in admin_ban_data:
+        admin_ban_data[admin_id] = {"count": 1, "start": now}
+        return 1
+
+    data = admin_ban_data[admin_id]
+
+    # Reset after 24 hrs
+    if now - data["start"] > timedelta(hours=24):
+        admin_ban_data[admin_id] = {"count": 1, "start": now}
+        return 1
+
+    data["count"] += 1
+    return data["count"]
+
+
+async def check_and_demote(client, chat_id, admin_id):
+    count = register_ban(admin_id)
+
+    if count > MAX_BANS:
+        # Auto-demote abusive admin
+        try:
+            await client.promote_chat_member(
+                chat_id,
+                admin_id,
+                can_manage_chat=False,
+                can_delete_messages=False,
+                can_restrict_members=False,
+                can_manage_video_chats=False,
+                can_promote_members=False,
+                can_invite_users=False,
+                can_pin_messages=False,
+                can_change_info=False,
+            )
+
+            await client.send_message(
+                chat_id,
+                f"⚠️ **Auto-Protection Enabled**\n\n"
+                f"Admin [{admin_id}](tg://user?id={admin_id}) ne "
+                f"**24 hours me 10 se zyada members ban/remove** kiye.\n"
+                f"Isliye unko automatically **DEMOTE** kar diya gaya."
+            )
+        except Exception as e:
+            print("Demote Error:", e)
+
 
 # ==========================================================
-# Start Message
+# Detect ANY Ban/Kick done by Admin or Bot
+# ==========================================================
+
+def register_handlers(app: Client):
+
+    @app.on_chat_member_updated()
+    async def detect_ban_events(client, event):
+        try:
+            old = event.old_chat_member
+            new = event.new_chat_member
+
+            # Detect ban/kick
+            if new.status == "kicked":
+                admin_id = event.from_user.id  # Who banned the user
+                chat_id = event.chat.id
+
+                # Ignore bot's own bans
+                if admin_id == client.me.id:
+                    return
+
+                await check_and_demote(client, chat_id, admin_id)
+
+        except Exception as e:
+            print("Ban detection error:", e)
+
+# ==========================================================
+# Start Menu
 # ==========================================================
     async def send_start_menu(message, user):
         text = f"""
@@ -51,11 +131,9 @@ Highlights:
             [InlineKeyboardButton("📚 Help Commands 📚", callback_data="help")]
         ])
 
-        # If /start command, send a new photo
         if message.text:
             await message.reply_photo(START_IMAGE, caption=text, reply_markup=buttons)
         else:
-            # If callback, edit the same message
             media = InputMediaPhoto(media=START_IMAGE, caption=text)
             await message.edit_media(media=media, reply_markup=buttons)
 
@@ -69,7 +147,7 @@ Highlights:
         await send_start_menu(message, user.first_name)
 
 # ==========================================================
-# Help Menu Message
+# Help Menu
 # ==========================================================
     async def send_help_menu(message):
         text = """
@@ -95,7 +173,7 @@ Choose a category below to explore commands:
         await message.edit_media(media=media, reply_markup=buttons)
 
 # ==========================================================
-# Help Callback_query
+# Help Callback
 # ==========================================================
     @app.on_callback_query(filters.regex("help"))
     async def help_callback(client, callback_query):
@@ -103,7 +181,7 @@ Choose a category below to explore commands:
         await callback_query.answer()
 
 # ==========================================================
-# back to start Callback_query
+# Back to Start
 # ==========================================================
     @app.on_callback_query(filters.regex("back_to_start"))
     async def back_to_start_callback(client, callback_query):
@@ -112,7 +190,7 @@ Choose a category below to explore commands:
         await callback_query.answer()
 
 # ==========================================================
-# Greetings Callback_query
+# Greetings
 # ==========================================================
     @app.on_callback_query(filters.regex("greetings"))
     async def greetings_callback(client, callback_query):
@@ -121,20 +199,13 @@ Choose a category below to explore commands:
     ⚙ Welcome System
 ╚══════════════════╝
 
-Commands to Manage Welcome Messages:
+Commands:
+- /setwelcome <text>
+- /welcome on
+- /welcome off
 
-- /setwelcome <text> : Set a custom welcome message for your group
-- /welcome on        : Enable the welcome messages
-- /welcome off       : Disable the welcome messages
-
-Supported Placeholders:
-- {username} : Telegram username
-- {first_name} : User's first name
-- {id} : User ID
-- {mention} : Mention user in message
-
-Example:
- /setwelcome Hello {first_name}! Welcome to {title}!
+Placeholders:
+{username}, {first_name}, {id}, {mention}
 """
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back", callback_data="help")]
@@ -144,7 +215,7 @@ Example:
         await callback_query.answer()
 
 # ==========================================================
-# Locks callback_query
+# Locks
 # ==========================================================
     @app.on_callback_query(filters.regex("locks"))
     async def locks_callback(client, callback_query):
@@ -153,22 +224,11 @@ Example:
      ⚙ Locks System
 ╚══════════════════╝
 
-Commands to Manage Locks:
+- /lock <type>
+- /unlock <type>
+- /locks
 
-- /lock <type>    : Enable a lock for the group
-- /unlock <type>  : Disable a lock for the group
-- /locks          : Show currently active locks
-
-Available Lock Types:
-- url       : Block links
-- sticker   : Block stickers
-- media     : Block photos/videos/gifs
-- username  : Block messages with @username mentions
-- language  : Block non-English messages
-
-Example:
- /lock url       : Blocks any messages containing links
- /unlock sticker : Allows stickers again
+Types: url, sticker, media, username, language
 """
         buttons = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔙 Back", callback_data="help")]
@@ -178,7 +238,7 @@ Example:
         await callback_query.answer()
 
 # ==========================================================
-# Moderation Callback_query
+# Moderation
 # ==========================================================
     @app.on_callback_query(filters.regex("moderation"))
     async def info_callback(client, callback_query):
@@ -188,23 +248,16 @@ Example:
       ⚙️ Moderation System
 ╚══════════════════╝
 
-Manage your group easily with these tools:
-
-¤ /kick <user> — Remove a user  
-¤ /ban <user> — Ban permanently  
-¤ /unban <user> — Lift ban  
-¤ /mute <user> — Disable messages  
-¤ /unmute <user> — Allow messages again  
-¤ /warn <user> — Add warning (3 = mute)  
-¤ /warns <user> — View warnings  
-¤ /resetwarns <user> — Clear all warnings  
-¤ /promote <user> — make admin
-¤ /demote <user> — remove from admin  
-
-💡 Example:
-Reply to a user or type  
-<code>/ban @username</code>
-
+¤ /kick
+¤ /ban
+¤ /unban
+¤ /mute
+¤ /unmute
+¤ /warn
+¤ /warns
+¤ /resetwarns
+¤ /promote
+¤ /demote
 """
             buttons = InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔙 Back", callback_data="help")]
@@ -215,49 +268,42 @@ Reply to a user or type
             await callback_query.answer()
     
         except Exception as e:
-            print(f"Error in info_callback: {e}")
-            await callback_query.answer("❌ Something went wrong.", show_alert=True)
-    
+            print("Error:", e)
+            await callback_query.answer("❌ Error occurred.", show_alert=True)
 
 # ==========================================================
-# Broadcast Command
+# Broadcast
 # ==========================================================
     @app.on_message(filters.private & filters.command("broadcast"))
     async def broadcast_message(client, message):
         if not message.reply_to_message:
-            await message.reply_text("⚠️ Please reply to a message to broadcast it.")
-            return
+            return await message.reply_text("⚠️ Reply to a message to broadcast.")
 
         if message.from_user.id != OWNER_ID:
-            await message.reply_text("❌ Only the bot owner can use this command.")
-            return
+            return await message.reply_text("❌ Only owner can use this.")
 
         text_to_send = message.reply_to_message.text or message.reply_to_message.caption
-        if not text_to_send:
-            await message.reply_text("⚠️ The replied message has no text to send.")
-            return
-
         users = await db.get_all_users()
         sent, failed = 0, 0
 
-        await message.reply_text(f"Broadcasting to {len(users)} users..")
+        await message.reply_text(f"Broadcasting to {len(users)} users...")
 
         for user_id in users:
             try:
                 await client.send_message(user_id, text_to_send)
                 sent += 1
-            except Exception:
+            except:
                 failed += 1
 
-        await message.reply_text(f"✅ Broadcast finished!\n\n Sent: {sent}\nFailed: {failed}")
+        await message.reply_text(f"Done!\nSent: {sent}\nFailed: {failed}")
 
 # ==========================================================
-# stats Command
+# Stats
 # ==========================================================
     @app.on_message(filters.private & filters.command("stats"))
     async def stats_command(client, message):
         if message.from_user.id != OWNER_ID:
-            return await message.reply_text("❌ Only the bot owner can use this command")
+            return await message.reply_text("❌ Only owner can use this.")
 
         users = await db.get_all_users()
         return await message.reply_text(f"💡 Total users: {len(users)}")
